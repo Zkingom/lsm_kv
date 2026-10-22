@@ -36,8 +36,11 @@ endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 add_library(kv STATIC
+  src/crc32.cpp
   src/db.cpp
+  src/file.cpp
   src/memtable.cpp
+  src/wal.cpp
 )
 target_include_directories(kv PUBLIC include)
 target_link_libraries(kv PUBLIC Threads::Threads)
@@ -48,6 +51,7 @@ if(KV_BUILD_TESTS)
     tests/skiplist_test.cpp
     tests/memtable_test.cpp
     tests/db_test.cpp
+    tests/wal_test.cpp
   )
   target_link_libraries(kv_tests PRIVATE kv GTest::gtest_main)
   include(GoogleTest)

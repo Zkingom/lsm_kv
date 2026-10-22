@@ -16,3 +16,12 @@
 
 - **GoogleTest 通过 FetchContent 拉取 v1.14.0** —— CLAUDE.md 要求；开发机 WSL 里 CMake 自带下载偶发 SSL 失败，所以本地用 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<已下载源码>` 指向手动下载的同版本源码，CMakeLists 本身不变 —— 备选：`find_package(GTest)` 用系统包（但 TSan 构建时系统包未插桩）、自写断言头文件。
 - **构建目录放在仓库外（WSL 的 `~/build/lsm-kv`）** —— 仓库在 Windows 盘上，跨文件系统编译慢；`.gitignore` 也忽略了 `build/` —— 备选：仓库内 `build/`。
+
+## Phase 2：WAL 与崩溃恢复
+
+- **I/O 错误抛 `kv::IOError` 异常，"找不到键"用 `std::optional` 表示** —— 磁盘错误是少见且通常无法就地处理的情况，异常让正常路径代码更干净；找不到键是常规结果，不该用异常 —— 备选：LevelDB 风格 `Status` 返回值（每次调用都要检查，代码更啰嗦但控制流显式）。
+- **WAL 记录格式 `[crc32][len][type|klen|key|vlen|value]`，crc 覆盖 len+payload，长度用定长 4 字节** —— 简单、能发现撕裂写和比特翻转 —— 备选：LevelDB 的 32KB 分块 + FULL/FIRST/MIDDLE/LAST 分片格式（能在损坏后重新同步）、varint 长度。
+- **重放遇到第一条坏记录就停止，并物理截断文件到有效前缀** —— 只恢复"某个真实存在过的前缀状态"；不截断的话新记录会写在垃圾后面、下次重启丢失 —— 备选：跳过坏记录继续读（需要分块格式支持重新同步，且可能恢复出从未存在过的状态）。
+- **WAL 默认不 fsync（`Options::sync_wal=false`）** —— 与 LevelDB 默认一致；进程崩溃不丢数据，掉电可能丢最近的写；需要更强保证时打开 —— 备选：每次 fsync（慢几十倍）、组提交（group commit，多个写者共享一次 fsync，Phase 6 之后可作为练习）。
+- **用 `flock(LOCK_EX|LOCK_NB)` 锁住数据目录下的 `LOCK` 文件** —— 防止两个进程同时打开同一目录 —— 备选：`fcntl` 记录锁（LevelDB 用法，语义上同进程内不互斥，不便测试）。
+- **WAL 写入直接 `write()`，无用户态缓冲** —— 返回即进内核，进程崩溃不丢；代码简单 —— 备选：用户态缓冲 + 显式 Flush（更少系统调用）。
