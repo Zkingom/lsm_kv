@@ -30,6 +30,9 @@ class DBFuzzTest : public ::testing::TestWithParam<FuzzParam> {
     options_.use_bloom_filter = GetParam().bloom;
     options_.memtable_size = GetParam().memtable_size;
     options_.block_size = 512;
+    // 小容量让数据很快压到 L2、L3，覆盖多层压缩和墓碑丢弃
+    options_.level1_max_bytes = 32 << 10;
+    options_.target_file_size = 8 << 10;
     db_ = DB::Open(options_, tmp_.path());
   }
 
@@ -80,8 +83,10 @@ TEST_P(DBFuzzTest, MatchesStdMap) {
       } else {
         ASSERT_EQ(got, it->second) << "op " << i << " key " << key;
       }
-    } else if (dice < 99) {
+    } else if (dice < 98) {
       CheckScan();
+    } else if (dice < 99) {
+      if (rng_() % 10 == 0) db_->CompactAll();
     } else {
       // 偶尔重启：验证 WAL 重放 + SSTable 加载后状态不变
       db_.reset();

@@ -37,6 +37,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 
 add_library(kv STATIC
   src/bloom.cpp
+  src/compaction.cpp
   src/crc32.cpp
   src/db.cpp
   src/file.cpp
@@ -57,6 +58,7 @@ if(KV_BUILD_TESTS)
     tests/skiplist_test.cpp
     tests/memtable_test.cpp
     tests/bloom_test.cpp
+    tests/compaction_test.cpp
     tests/db_test.cpp
     tests/db_fuzz_test.cpp
     tests/merging_iterator_test.cpp

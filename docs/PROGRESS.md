@@ -48,4 +48,12 @@ scripts/build_and_test.sh            # 编译到 ./build 并跑全部测试
 
 运行更长的对拍：`KV_FUZZ_OPS=200000 ./build/kv_tests --gtest_filter='*Fuzz*'`
 
-已知问题：还没有 Compaction，L0 文件会无限增长，读越来越慢（Phase 5 解决）。
+已知问题：无（L0 无限增长的问题已在 Phase 5 解决）。
+
+## Phase 5：Compaction ✅
+
+- `include/kv/compaction.h`：分层压缩。`PickCompaction` 按分数选层；`RunCompaction` 用归并迭代器合并、丢弃旧版本与可回收墓碑、按目标大小切分输出；`ApplyCompaction` 生成新 Version。
+- `DB`：每次刷盘后循环压缩直到各层不超标；`CompactAll()` 手动全量压缩。
+- 测试：`tests/compaction_test.cpp`——1000 个键覆盖写 20 轮后 SSTable 总量 < 3×活数据、文件数 < 15；删除全部键后 `CompactAll` 文件数归零；重启后各层有序；对拍测试改用很小的层容量，覆盖 L0~L3 的多层压缩（`KV_FUZZ_OPS=100000` 也通过）。
+
+已知问题：刷盘和压缩仍在写线程同步执行，写延迟有明显毛刺（Phase 6 解决）。

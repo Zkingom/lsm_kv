@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace kv {
 
@@ -28,6 +29,14 @@ struct Options {
   // [性能] 代价：每个键多占 bits/8 字节内存（过滤器常驻内存），写 SSTable 时多算一次哈希。
   bool use_bloom_filter = true;
   int bloom_bits_per_key = 10;
+
+  // ---- Compaction（策略见 compaction.h 和 docs/DECISIONS.md）----
+  // L0 文件数达到该值触发 L0→L1 压缩
+  int l0_compaction_trigger = 4;
+  // L1 的容量上限；L2、L3 依次 ×10
+  uint64_t level1_max_bytes = 10 << 20;
+  // 压缩输出的单个 SSTable 目标大小
+  uint64_t target_file_size = 2 << 20;
 };
 
 }  // namespace kv

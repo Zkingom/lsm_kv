@@ -144,6 +144,8 @@ void DB::FlushImmutable() {
   current_ = std::move(version);
   imm_.reset();
   RemoveObsoleteFiles();
+  // [性能] Phase 5 在刷盘后同步压缩，写线程会被阻塞更久；Phase 6 移到后台线程
+  MaybeCompact();
 }
 
 std::shared_ptr<FileMeta> DB::WriteLevel0Table(const MemTable& mem) {
@@ -186,6 +188,37 @@ void DB::RemoveObsoleteFiles() {
   }
 }
 
+// ======================== 压缩 ========================
+
+void DB::MaybeCompact() {
+  while (auto c = PickCompaction(*current_, options_, &compact_pointers_)) DoCompaction(*c);
+}
+
+void DB::CompactAll() {
+  // 先把内存表刷下去，否则留在内存里的墓碑/新值不参与压缩
+  if (mem_->Count() > 0) {
+    SwitchMemTable();
+    FlushImmutable();
+  }
+  for (int level = 0; level < kNumLevels - 1; ++level) {
+    if (auto c = CompactWholeLevel(*current_, level)) DoCompaction(*c);
+  }
+}
+
+void DB::DoCompaction(const Compaction& c) {
+  std::vector<std::shared_ptr<FileMeta>> outputs;
+  if (c.IsTrivialMove()) {
+    outputs = c.inputs;  // [性能] 下一层没有重叠：文件原样挪下去，不用重写
+  } else {
+    outputs = RunCompaction(c, *current_, options_, dir_, [this] { return NewFileNumber(); });
+  }
+  std::shared_ptr<Version> version = ApplyCompaction(*current_, c, outputs);
+  // [持久化] 先让 MANIFEST 指向新文件，再删除旧文件。中途崩溃最多留下孤儿文件
+  SaveManifest(*version);
+  current_ = std::move(version);
+  RemoveObsoleteFiles();
+}
+
 // ======================== 读路径 ========================
 
 std::optional<std::string> DB::Get(const std::string& key) const {
@@ -219,6 +252,14 @@ std::vector<std::pair<std::string, std::string>> DB::Scan(const std::string& sta
 
 int DB::NumFilesAtLevel(int level) const {
   return static_cast<int>(current_->levels[level].size());
+}
+
+uint64_t DB::TotalTableBytes() const {
+  uint64_t total = 0;
+  for (const auto& files : current_->levels) {
+    for (const auto& f : files) total += f->file_size();
+  }
+  return total;
 }
 
 }  // namespace kv

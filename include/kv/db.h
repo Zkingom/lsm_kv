@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "kv/compaction.h"
 #include "kv/file.h"
 #include "kv/memtable.h"
 #include "kv/options.h"
@@ -47,8 +48,12 @@ class DB {
       const std::string& start, const std::string& end,
       size_t limit = std::numeric_limits<size_t>::max()) const;
 
-  // 调试/测试用：某一层当前的 SSTable 个数
+  // 手动全量压缩：把每一层依次压到下一层，最终数据都在最底层（墓碑被彻底清除）
+  void CompactAll();
+
+  // 调试/测试用：某一层当前的 SSTable 个数、所有 SSTable 的总字节数
   int NumFilesAtLevel(int level) const;
+  uint64_t TotalTableBytes() const;
 
  private:
   DB(const Options& options, const std::string& dir);
@@ -68,6 +73,10 @@ class DB {
   std::shared_ptr<FileMeta> WriteLevel0Table(const MemTable& mem);
   void SaveManifest(const Version& version);
   void RemoveObsoleteFiles();
+
+  // ---- 压缩 ----
+  void MaybeCompact();
+  void DoCompaction(const Compaction& c);
   uint64_t NewFileNumber() { return next_file_number_++; }
 
   const Options options_;
@@ -80,6 +89,7 @@ class DB {
   uint64_t log_number_ = 0;  // mem_ 对应的 WAL 编号
   uint64_t next_file_number_ = 1;
   std::shared_ptr<const Version> current_;
+  CompactPointers compact_pointers_;
 };
 
 }  // namespace kv

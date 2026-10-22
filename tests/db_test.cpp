@@ -86,6 +86,12 @@ int CountFiles(const std::string& dir, const std::string& suffix) {
   return n;
 }
 
+int TotalFiles(const DB& db) {
+  int n = 0;
+  for (int level = 0; level < kNumLevels; ++level) n += db.NumFilesAtLevel(level);
+  return n;
+}
+
 Options SmallMemTableOptions() {
   Options options;
   options.memtable_size = 16 << 10;  // 16KB：很快就会触发刷盘
@@ -100,14 +106,14 @@ TEST(DBTest, FlushToSSTableAndReadBackAfterReopen) {
   {
     auto db = DB::Open(SmallMemTableOptions(), tmp.path());
     for (int i = 0; i < n; ++i) db->Put("key" + std::to_string(i), "value" + std::to_string(i));
-    EXPECT_GT(db->NumFilesAtLevel(0), 1);
+    EXPECT_GT(TotalFiles(*db), 1);
     // 刷盘成功后旧 WAL 被删除，只剩当前 MemTable 对应的那一个
     EXPECT_EQ(CountFiles(tmp.path(), ".log"), 1);
     for (int i = 0; i < n; ++i) ASSERT_EQ(db->Get("key" + std::to_string(i)), "value" + std::to_string(i));
   }
   auto db = DB::Open(SmallMemTableOptions(), tmp.path());
   for (int i = 0; i < n; ++i) ASSERT_EQ(db->Get("key" + std::to_string(i)), "value" + std::to_string(i));
-  EXPECT_EQ(CountFiles(tmp.path(), ".sst"), db->NumFilesAtLevel(0));  // 没有孤儿文件
+  EXPECT_EQ(CountFiles(tmp.path(), ".sst"), TotalFiles(*db));  // 没有孤儿文件
 }
 
 // 新 SSTable 里的墓碑/新值，必须遮住老 SSTable 里的旧值
@@ -121,7 +127,7 @@ TEST(DBTest, NewerDataShadowsOlderSSTables) {
   db->Put("x", "new");
   db->Delete("y");
   for (int i = 0; i < 200; ++i) db->Put("fill" + std::to_string(i), filler);  // 新值和墓碑也刷下去
-  ASSERT_GE(db->NumFilesAtLevel(0), 2);
+  ASSERT_GE(TotalFiles(*db), 1);
   EXPECT_EQ(db->Get("x"), "new");
   EXPECT_FALSE(db->Get("y").has_value());
 
