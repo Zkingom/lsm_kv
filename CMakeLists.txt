@@ -40,6 +40,10 @@ add_library(kv STATIC
   src/db.cpp
   src/file.cpp
   src/memtable.cpp
+  src/sstable.cpp
+  src/sstable_builder.cpp
+  src/sstable_format.cpp
+  src/version.cpp
   src/wal.cpp
 )
 target_include_directories(kv PUBLIC include)
@@ -51,6 +55,7 @@ if(KV_BUILD_TESTS)
     tests/skiplist_test.cpp
     tests/memtable_test.cpp
     tests/db_test.cpp
+    tests/sstable_test.cpp
     tests/wal_test.cpp
   )
   target_link_libraries(kv_tests PRIVATE kv GTest::gtest_main)

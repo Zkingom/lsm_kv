@@ -82,8 +82,6 @@ class FileLock {
 };
 
 std::string ReadFileToString(const std::string& path);
-// [持久化] 把文件截断到 size 字节并 fsync
-void TruncateFile(const std::string& path, uint64_t size);
 // [持久化] fsync 目录本身，让目录项（新文件名、rename、删除）落盘
 void SyncDir(const std::string& dir);
 // [持久化] 原子地用 content 替换 path：写临时文件 → fsync → rename → fsync 目录

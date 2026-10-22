@@ -114,15 +114,6 @@ std::string ReadFileToString(const std::string& path) {
   return file.Read(0, file.Size());
 }
 
-void TruncateFile(const std::string& path, uint64_t size) {
-  if (::truncate(path.c_str(), static_cast<off_t>(size)) != 0) ThrowErrno("truncate", path);
-  int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
-  if (fd < 0) ThrowErrno("open", path);
-  int rc = ::fsync(fd);
-  ::close(fd);
-  if (rc != 0) ThrowErrno("fsync", path);
-}
-
 void SyncDir(const std::string& dir) {
   int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (fd < 0) ThrowErrno("open dir", dir);
