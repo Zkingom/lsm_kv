@@ -5,6 +5,7 @@
 #include <set>
 
 #include "kv/filename.h"
+#include "kv/merging_iterator.h"
 
 namespace kv {
 
@@ -195,6 +196,25 @@ std::optional<std::string> DB::Get(const std::string& key) const {
   if (r == LookupResult::kNotFound) r = current_->Get(key, &value);
   if (r == LookupResult::kFound) return value;
   return std::nullopt;
+}
+
+std::vector<std::pair<std::string, std::string>> DB::Scan(const std::string& start,
+                                                         const std::string& end,
+                                                         size_t limit) const {
+  // 子迭代器必须按 新→旧 排列，归并时同一个键只保留最新的
+  std::vector<std::unique_ptr<Iterator>> children;
+  children.push_back(mem_->NewIterator());
+  if (imm_) children.push_back(imm_->NewIterator());
+  current_->AddIterators(start, end, &children);
+
+  MergingIterator it(std::move(children));
+  std::vector<std::pair<std::string, std::string>> result;
+  for (it.Seek(start); it.Valid() && result.size() < limit; it.Next()) {
+    if (!end.empty() && it.key() >= end) break;
+    if (it.type() == ValueType::kDeletion) continue;  // 最新版本是墓碑：这个键已被删除
+    result.emplace_back(it.key(), it.value());
+  }
+  return result;
 }
 
 int DB::NumFilesAtLevel(int level) const {

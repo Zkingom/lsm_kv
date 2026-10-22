@@ -36,10 +36,12 @@ endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 add_library(kv STATIC
+  src/bloom.cpp
   src/crc32.cpp
   src/db.cpp
   src/file.cpp
   src/memtable.cpp
+  src/merging_iterator.cpp
   src/sstable.cpp
   src/sstable_builder.cpp
   src/sstable_format.cpp
@@ -54,7 +56,10 @@ if(KV_BUILD_TESTS)
   add_executable(kv_tests
     tests/skiplist_test.cpp
     tests/memtable_test.cpp
+    tests/bloom_test.cpp
     tests/db_test.cpp
+    tests/db_fuzz_test.cpp
+    tests/merging_iterator_test.cpp
     tests/sstable_test.cpp
     tests/wal_test.cpp
   )

@@ -47,11 +47,14 @@ class TableBuilder {
   void FlushDataBlock();
 
   const size_t block_size_;
+  const bool use_bloom_;
+  const int bloom_bits_per_key_;
   WritableFile file_;
   std::string data_block_;   // 正在攒的数据块
   std::string index_block_;  // 所有已写出数据块的索引
   std::string last_key_;
   uint64_t num_entries_ = 0;
+  std::vector<uint64_t> key_hashes_;  // 用于最后构造布隆过滤器（只存 8 字节哈希，不存键）
 };
 
 class Table : public std::enable_shared_from_this<Table> {
@@ -59,7 +62,9 @@ class Table : public std::enable_shared_from_this<Table> {
   // 打开并读入 footer、索引；失败抛 IOError
   static std::shared_ptr<Table> Open(const std::string& path);
 
-  // 语义同 MemTable::Get：kFound / kDeleted（墓碑）/ kNotFound
+  // 布隆过滤器判断：false 表示一定不存在
+  bool MayContain(const std::string& key) const;
+  // 语义同 MemTable::Get：kFound / kDeleted（墓碑）/ kNotFound。会先查布隆过滤器
   LookupResult Get(const std::string& key, std::string* value) const;
   // 有序迭代整个表（包括墓碑）
   std::unique_ptr<Iterator> NewIterator() const;
@@ -78,6 +83,7 @@ class Table : public std::enable_shared_from_this<Table> {
 
   RandomAccessFile file_;
   std::vector<IndexEntry> index_;
+  std::string filter_;  // 布隆过滤器，常驻内存；为空表示没有过滤器
   std::string smallest_;
 };
 

@@ -1,5 +1,6 @@
 #include "kv/version.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <sstream>
 
@@ -7,16 +8,43 @@
 
 namespace kv {
 
+const FileMeta* FindFileInLevel(const std::vector<std::shared_ptr<FileMeta>>& files,
+                                const std::string& key) {
+  // 第一个 largest >= key 的文件；同层不重叠，所以 key 只可能在这个文件里
+  auto it = std::lower_bound(files.begin(), files.end(), key,
+                             [](const auto& f, const std::string& k) { return f->largest() < k; });
+  if (it == files.end() || key < (*it)->smallest()) return nullptr;
+  return it->get();
+}
+
 LookupResult Version::Get(const std::string& key, std::string* value) const {
-  for (int level = 0; level < kNumLevels; ++level) {
-    for (const auto& file : levels[level]) {
-      // 键不在 [smallest, largest] 范围内，这个文件一定没有它，连索引都不用查
-      if (key < file->smallest() || key > file->largest()) continue;
-      LookupResult r = file->table->Get(key, value);
-      if (r != LookupResult::kNotFound) return r;
-    }
+  // L0：文件之间键范围可能重叠，只能按 新→旧 逐个查
+  for (const auto& file : levels[0]) {
+    // 键不在 [smallest, largest] 范围内，这个文件一定没有它，连过滤器都不用查
+    if (key < file->smallest() || key > file->largest()) continue;
+    LookupResult r = file->table->Get(key, value);
+    if (r != LookupResult::kNotFound) return r;
+  }
+  // L1+：每层最多查一个文件。层号越小数据越新，所以从上往下第一个有结论的就是答案
+  for (int level = 1; level < kNumLevels; ++level) {
+    const FileMeta* file = FindFileInLevel(levels[level], key);
+    if (file == nullptr) continue;
+    LookupResult r = file->table->Get(key, value);
+    if (r != LookupResult::kNotFound) return r;
   }
   return LookupResult::kNotFound;
+}
+
+void Version::AddIterators(const std::string& start, const std::string& end,
+                           std::vector<std::unique_ptr<Iterator>>* out) const {
+  for (const auto& files : levels) {
+    for (const auto& file : files) {
+      // 范围裁剪：文件整体在扫描区间之外就不用打开迭代器
+      if (file->largest() < start) continue;
+      if (!end.empty() && file->smallest() >= end) continue;
+      out->push_back(file->table->NewIterator());
+    }
+  }
 }
 
 void WriteManifest(const std::string& dir, const ManifestData& data) {

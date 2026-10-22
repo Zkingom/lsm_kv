@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "kv/bloom.h"
+
 namespace kv {
 
 // ---------------- Table ----------------
@@ -14,6 +16,7 @@ std::shared_ptr<Table> Table::Open(const std::string& path) {
 
   Footer footer = DecodeFooter(file.Read(file.Size() - kFooterSize, kFooterSize));
   table->index_ = DecodeIndexBlock(ReadBlock(file, footer.index));
+  if (footer.filter.size > 0) table->filter_ = ReadBlock(file, footer.filter);
   if (table->index_.empty()) throw IOError("sstable has no data: " + path);
 
   // 最小键 = 第一个数据块的第一个键。打开时读一次，后面 Compaction 判断键范围重叠要用。
@@ -35,7 +38,11 @@ std::vector<Record> Table::ReadDataBlock(size_t block_index) const {
   return DecodeDataBlock(ReadBlock(file_, index_[block_index].handle));
 }
 
+bool Table::MayContain(const std::string& key) const { return BloomMayContain(filter_, key); }
+
 LookupResult Table::Get(const std::string& key, std::string* value) const {
+  // 过滤器说"一定没有"，就不必读数据块了——对不存在的键省掉一次磁盘读
+  if (!MayContain(key)) return LookupResult::kNotFound;
   size_t block = FindBlock(key);
   if (block == index_.size()) return LookupResult::kNotFound;
 

@@ -52,7 +52,15 @@ struct Version {
 
   // 在这个版本的 SSTable 里查 key（按 新→旧 的顺序，第一个有结论的为准）
   LookupResult Get(const std::string& key, std::string* value) const;
+
+  // 把键范围与 [start, end) 有交集的文件的迭代器按 新→旧 追加到 out（end 为空表示无上界）
+  void AddIterators(const std::string& start, const std::string& end,
+                    std::vector<std::unique_ptr<Iterator>>* out) const;
 };
+
+// 在 L1+ 某一层（文件有序且不重叠）中二分查找可能包含 key 的文件，没有返回 nullptr
+const FileMeta* FindFileInLevel(const std::vector<std::shared_ptr<FileMeta>>& files,
+                                const std::string& key);
 
 struct ManifestData {
   uint64_t next_file_number = 1;

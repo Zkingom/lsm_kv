@@ -37,3 +37,15 @@ scripts/build_and_test.sh            # 编译到 ./build 并跑全部测试
 - 测试：`tests/sstable_test.cpp`（点查/墓碑/缺失键、迭代与 Seek、块损坏检测、非 SSTable 文件）；`tests/db_test.cpp`（写入远超阈值后重启全部读回、新 SSTable 遮住旧值、孤儿 .sst 清理）。
 
 已知问题：刷盘在写线程同步进行，写入会出现延迟毛刺（Phase 6 解决）。
+
+## Phase 4：读路径与布隆过滤器 ✅
+
+- `include/kv/bloom.h`：布隆过滤器（双重哈希），写入 SSTable 的过滤器块，打开表时载入内存；`Table::Get` 先查过滤器。
+- `include/kv/version.h`：`Version::Get` 按 L0 新→旧、L1+ 每层二分一个文件的顺序查；`AddIterators` 按键范围裁剪文件。
+- `include/kv/merging_iterator.h`：多路归并，同键只输出最新版本（含墓碑）。
+- `DB::Scan(start, end, limit)`：MemTable + 冻结表 + 各 SSTable 归并，跳过墓碑。
+- 测试：`tests/bloom_test.cpp`（无假阴性、误判率 < 2%）、`tests/merging_iterator_test.cpp`、`tests/db_fuzz_test.cpp`（**与 std::map 对拍**，含随机重启）。
+
+运行更长的对拍：`KV_FUZZ_OPS=200000 ./build/kv_tests --gtest_filter='*Fuzz*'`
+
+已知问题：还没有 Compaction，L0 文件会无限增长，读越来越慢（Phase 5 解决）。

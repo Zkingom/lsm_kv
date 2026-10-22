@@ -23,6 +23,11 @@ struct Options {
 
   // SSTable 数据块的目标大小
   size_t block_size = 4 << 10;
+
+  // 每个 SSTable 是否带布隆过滤器，以及每个键占多少比特（10 比特 ≈ 0.8% 误判率）
+  // [性能] 代价：每个键多占 bits/8 字节内存（过滤器常驻内存），写 SSTable 时多算一次哈希。
+  bool use_bloom_filter = true;
+  int bloom_bits_per_key = 10;
 };
 
 }  // namespace kv

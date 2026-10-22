@@ -13,9 +13,13 @@
 //     ②③之间崩溃：旧 WAL 编号小于 MANIFEST 的 log_number，启动时被识别为过期并删除。
 #pragma once
 
+#include <cstddef>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "kv/file.h"
 #include "kv/memtable.h"
@@ -36,6 +40,12 @@ class DB {
   void Put(const std::string& key, const std::string& value);
   void Delete(const std::string& key);
   std::optional<std::string> Get(const std::string& key) const;
+
+  // 范围扫描：返回 [start, end) 内所有存活的键值对（按键升序），最多 limit 条。
+  // end 为空串表示没有上界。
+  std::vector<std::pair<std::string, std::string>> Scan(
+      const std::string& start, const std::string& end,
+      size_t limit = std::numeric_limits<size_t>::max()) const;
 
   // 调试/测试用：某一层当前的 SSTable 个数
   int NumFilesAtLevel(int level) const;
