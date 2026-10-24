@@ -16,6 +16,7 @@
 //     从版本里移除了，表对象（和打开的 fd）也不会被提前销毁。
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -72,6 +73,8 @@ class Table : public std::enable_shared_from_this<Table> {
   const std::string& smallest() const { return smallest_; }
   const std::string& largest() const { return index_.back().last_key; }
   uint64_t file_size() const { return file_.Size(); }
+  // 累计读过多少次数据块（统计用：衡量布隆过滤器省掉了多少 I/O）
+  uint64_t block_reads() const { return block_reads_.load(std::memory_order_relaxed); }
 
  private:
   friend class TableIterator;
@@ -85,6 +88,8 @@ class Table : public std::enable_shared_from_this<Table> {
   std::vector<IndexEntry> index_;
   std::string filter_;  // 布隆过滤器，常驻内存；为空表示没有过滤器
   std::string smallest_;
+  // 多个读线程会同时累加，所以用原子变量；只是统计，不需要和其它数据同步，用 relaxed 即可
+  mutable std::atomic<uint64_t> block_reads_{0};
 };
 
 }  // namespace kv

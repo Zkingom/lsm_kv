@@ -57,6 +57,8 @@ void DB::FlushImmutable(std::unique_lock<std::mutex>& lock) {
   std::shared_ptr<FileMeta> meta = WriteLevel0Table(*imm, number);
   lock.lock();
 
+  stats_.flushes++;
+  stats_.flush_bytes += meta->file_size();
   auto version = std::make_shared<Version>(*current_);  // copy-on-write
   version->levels[0].insert(version->levels[0].begin(), std::move(meta));
   // [持久化] 顺序很重要：先让 MANIFEST 记住新文件并推进 log_number（imm 刷完后只有
@@ -89,6 +91,7 @@ void DB::BackgroundCompaction(std::unique_lock<std::mutex>& lock, const Compacti
   std::vector<std::shared_ptr<FileMeta>> outputs;
   if (c.IsTrivialMove()) {
     outputs = c.inputs;  // [性能] 下一层没有重叠：文件原样挪下去，不用重写
+    stats_.trivial_moves++;
   } else {
     std::shared_ptr<const Version> base = current_;
     lock.unlock();
@@ -98,6 +101,8 @@ void DB::BackgroundCompaction(std::unique_lock<std::mutex>& lock, const Compacti
       return next_file_number_++;
     });
     lock.lock();
+    stats_.compactions++;
+    for (const auto& f : outputs) stats_.compaction_bytes += f->file_size();
   }
   // 只有本线程会修改 current_，所以此刻的 current_ 就是 base，输入文件都还在
   std::shared_ptr<Version> version = ApplyCompaction(*current_, c, outputs);

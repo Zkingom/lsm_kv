@@ -62,6 +62,10 @@ target_link_libraries(kv_server PRIVATE kv)
 add_executable(kv_cli tools/kv_cli.cpp)
 target_link_libraries(kv_cli PRIVATE kv)
 
+# 性能基准
+add_executable(db_bench bench/db_bench.cpp)
+target_link_libraries(db_bench PRIVATE kv)
+
 if(KV_BUILD_TESTS)
   enable_testing()
   add_executable(kv_tests

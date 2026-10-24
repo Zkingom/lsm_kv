@@ -126,6 +126,7 @@ void DB::Write(ValueType type, const std::string& key, const std::string& value)
     std::unique_lock<std::mutex> lock(mu_);
     MakeRoomForWrite(lock);
     mem = mem_;
+    stats_.user_bytes_written += key.size() + value.size();
   }
   // 下面两步不持有 mu_：写 WAL 的磁盘 I/O 不会挡住读者和后台线程。
   // mem 不会在这期间被冻结——只有写者自己会切换 MemTable，而写者就是我们。
@@ -211,6 +212,20 @@ std::vector<std::pair<std::string, std::string>> DB::Scan(const std::string& sta
 
 int DB::NumFilesAtLevel(int level) const {
   return static_cast<int>(GetSuperVersion().version->levels[level].size());
+}
+
+DBStats DB::GetStats() const {
+  DBStats stats;
+  std::shared_ptr<const Version> version;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stats = stats_;
+    version = current_;
+  }
+  for (const auto& files : version->levels) {
+    for (const auto& f : files) stats.block_reads += f->table->block_reads();
+  }
+  return stats;
 }
 
 uint64_t DB::TotalTableBytes() const {

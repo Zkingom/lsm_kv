@@ -45,6 +45,17 @@
 
 namespace kv {
 
+// 运行统计。写放大 ≈ (flush_bytes + compaction_bytes) / user_bytes_written
+struct DBStats {
+  uint64_t user_bytes_written = 0;  // 用户 Put/Delete 的键+值字节数
+  uint64_t flush_bytes = 0;         // 刷盘写出的 SSTable 字节数
+  uint64_t compaction_bytes = 0;    // 压缩写出的 SSTable 字节数
+  uint64_t flushes = 0;
+  uint64_t compactions = 0;         // 不含 trivial move
+  uint64_t trivial_moves = 0;
+  uint64_t block_reads = 0;         // 当前所有 SSTable 累计读数据块的次数
+};
+
 class DB {
  public:
   // 打开（不存在则创建）数据目录 dir，从 MANIFEST + WAL 恢复，并启动后台线程。失败抛 IOError。
@@ -74,6 +85,7 @@ class DB {
   // 调试/测试用：某一层当前的 SSTable 个数、所有 SSTable 的总字节数
   int NumFilesAtLevel(int level) const;
   uint64_t TotalTableBytes() const;
+  DBStats GetStats() const;
 
  private:
   // 一次读操作看到的完整视图：三者在同一把锁下一起拷贝，保证互相一致
@@ -130,6 +142,7 @@ class DB {
   bool shutting_down_ = false;
   bool manual_compaction_ = false;
   std::string bg_error_;  // 后台出错后记下原因；之后所有写入都会失败
+  DBStats stats_;         // block_reads 字段不在这里维护，GetStats 时现算
 
   std::thread bg_thread_;  // 放在最后：构造时其它成员都已初始化
 };

@@ -35,6 +35,7 @@ size_t Table::FindBlock(const std::string& key) const {
 std::vector<Record> Table::ReadDataBlock(size_t block_index) const {
   // [性能] 每次都从文件读并完整解析一个块，没有块缓存（Block Cache）。
   // 热点数据会被重复读——不过操作系统页缓存会兜底，实际多数是内存拷贝而非磁盘 I/O。
+  block_reads_.fetch_add(1, std::memory_order_relaxed);
   return DecodeDataBlock(ReadBlock(file_, index_[block_index].handle));
 }
 
