@@ -37,6 +37,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 
 add_library(kv STATIC
   src/bloom.cpp
+  src/client.cpp
   src/compaction.cpp
   src/crc32.cpp
   src/db.cpp
@@ -44,6 +45,8 @@ add_library(kv STATIC
   src/file.cpp
   src/memtable.cpp
   src/merging_iterator.cpp
+  src/protocol.cpp
+  src/server.cpp
   src/sstable.cpp
   src/sstable_builder.cpp
   src/sstable_format.cpp
@@ -52,6 +55,12 @@ add_library(kv STATIC
 )
 target_include_directories(kv PUBLIC include)
 target_link_libraries(kv PUBLIC Threads::Threads)
+
+# 命令行工具：服务端与客户端
+add_executable(kv_server tools/kv_server.cpp)
+target_link_libraries(kv_server PRIVATE kv)
+add_executable(kv_cli tools/kv_cli.cpp)
+target_link_libraries(kv_cli PRIVATE kv)
 
 if(KV_BUILD_TESTS)
   enable_testing()
@@ -64,6 +73,7 @@ if(KV_BUILD_TESTS)
     tests/db_test.cpp
     tests/db_fuzz_test.cpp
     tests/merging_iterator_test.cpp
+    tests/server_test.cpp
     tests/sstable_test.cpp
     tests/wal_test.cpp
   )

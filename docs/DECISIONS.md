@@ -71,3 +71,15 @@
 - **关闭时不刷内存表，只等后台线程做完手上的活** —— 内存表数据已在 WAL 里，下次打开会重放 —— 备选：关闭前刷盘（下次启动更快）。
 - **`CompactAll` 由后台线程执行，调用方持 `write_mu_` 等待完成** —— 保持"只有后台线程修改版本"的不变量 —— 无。
 - **TSan：新内核 ASLR 位数大，用 `setarch -R` 关闭测试进程的 ASLR；TSan 构建推迟 gtest 用例发现到 ctest 运行时** —— 不改系统设置 —— 备选：`sysctl vm.mmap_rnd_bits=28`（系统级）。
+
+## Phase 7：网络服务层
+
+- **单 Reactor：一个线程跑 epoll 循环，命令在 I/O 线程里同步执行** —— CLAUDE.md 要求；最容易读懂 —— 备选：多 Reactor（one loop per thread）、I/O 线程 + 业务线程池。
+- **水平触发（LT），但每次都读/写到 EAGAIN** —— LT 漏读也不会丢事件，不容易写错；读到 EAGAIN 减少唤醒次数 —— 备选：边缘触发（ET，必须读到 EAGAIN，否则连接"卡死"）。
+- **只在输出缓冲非空时关注 EPOLLOUT** —— 否则 socket 几乎总是可写，epoll_wait 空转 —— 无。
+- **背压：连接输出缓冲 > 4MB 时暂停读该连接；单行命令 > 1MB 报错并断开** —— 防止慢客户端/恶意客户端把服务端内存撑爆 —— 备选：无限制（简单但危险）。
+- **用 eventfd 唤醒 epoll_wait 实现 Stop()，可以在信号处理函数里调用** —— write(2) 是异步信号安全的 —— 备选：signalfd、self-pipe（经典写法）、epoll_wait 超时轮询。
+- **send 用 MSG_NOSIGNAL** —— 对端关闭时得到 EPIPE 错误而不是 SIGPIPE 杀进程 —— 备选：全局忽略 SIGPIPE。
+- **文本协议：按 '\n' 分帧，SET 的值是行尾剩余部分（可含空格，不能含换行）；SCAN 用 [start, end)，end 写 "-" 表示无上界，单次最多 1000 行** —— 与 telnet/nc 兼容，便于手工调试；限制行数防止巨型响应 —— 备选：长度前缀二进制协议（如 Redis RESP），可传任意二进制值。
+- **协议解析（protocol.cpp）与网络层（server.cpp）分离** —— 协议可以脱离 socket 单独测试 —— 无。
+- **客户端关闭 Nagle（TCP_NODELAY）** —— 一问一答的小包不等待合并，避免几十毫秒延迟 —— 无。

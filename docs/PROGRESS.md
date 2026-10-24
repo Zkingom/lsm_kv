@@ -69,3 +69,27 @@ scripts/run_tsan.sh                  # ThreadSanitizer 编译并跑全部测试
 - **ThreadSanitizer**：`scripts/run_tsan.sh`，35 个测试全部通过，0 个数据竞争报告。
 
 已知问题：一次大压缩期间不能刷盘，写入速度很快时会因冻结表未刷完而停顿（单后台线程的代价）。
+
+## Phase 7：网络服务层 ✅
+
+- `include/kv/protocol.h`：文本协议 `SET/GET/DEL/SCAN/PING`（格式见头文件）。
+- `include/kv/server.h`：epoll 单 Reactor，非阻塞 socket，按行分帧（处理粘包/拆包），输出背压，eventfd 优雅退出。
+- `include/kv/client.h` + `tools/kv_cli.cpp`：阻塞式客户端（交互模式 / 单条命令 / 管道输入）。
+- `tools/kv_server.cpp`：`kv_server --port 6380 --dir ./kvdata`，Ctrl+C 优雅退出。
+- 测试：`tests/server_test.cpp`——协议单元测试；真实 TCP：读写、管道化多条命令、半条命令分多次发送、8 个客户端并发（TSan 下也通过）。
+
+手动体验：
+
+```bash
+./build/kv_server --port 6380 --dir /tmp/kvdata &
+./build/kv_cli --port 6380                # 交互模式
+./build/kv_cli --port 6380 SET name alice # 单条命令
+printf 'SET a 1
+GET a
+SCAN a -
+' | ./build/kv_cli --port 6380
+```
+
+端到端验证（已执行）：写入 → DEL → SCAN → Ctrl+C 退出 → 重启服务端 → SCAN 结果一致。
+
+已知问题：命令在 I/O 线程同步执行，一次大 SCAN 或写停顿会让所有连接一起等待（单 Reactor 的固有限制）。
