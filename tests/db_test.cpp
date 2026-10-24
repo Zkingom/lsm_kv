@@ -106,12 +106,14 @@ TEST(DBTest, FlushToSSTableAndReadBackAfterReopen) {
   {
     auto db = DB::Open(SmallMemTableOptions(), tmp.path());
     for (int i = 0; i < n; ++i) db->Put("key" + std::to_string(i), "value" + std::to_string(i));
+    db->WaitForIdle();  // 刷盘在后台进行
     EXPECT_GT(TotalFiles(*db), 1);
     // 刷盘成功后旧 WAL 被删除，只剩当前 MemTable 对应的那一个
     EXPECT_EQ(CountFiles(tmp.path(), ".log"), 1);
     for (int i = 0; i < n; ++i) ASSERT_EQ(db->Get("key" + std::to_string(i)), "value" + std::to_string(i));
   }
   auto db = DB::Open(SmallMemTableOptions(), tmp.path());
+  db->WaitForIdle();
   for (int i = 0; i < n; ++i) ASSERT_EQ(db->Get("key" + std::to_string(i)), "value" + std::to_string(i));
   EXPECT_EQ(CountFiles(tmp.path(), ".sst"), TotalFiles(*db));  // 没有孤儿文件
 }
@@ -127,6 +129,7 @@ TEST(DBTest, NewerDataShadowsOlderSSTables) {
   db->Put("x", "new");
   db->Delete("y");
   for (int i = 0; i < 200; ++i) db->Put("fill" + std::to_string(i), filler);  // 新值和墓碑也刷下去
+  db->WaitForIdle();
   ASSERT_GE(TotalFiles(*db), 1);
   EXPECT_EQ(db->Get("x"), "new");
   EXPECT_FALSE(db->Get("y").has_value());

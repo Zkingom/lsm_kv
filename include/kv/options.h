@@ -33,6 +33,8 @@ struct Options {
   // ---- Compaction（策略见 compaction.h 和 docs/DECISIONS.md）----
   // L0 文件数达到该值触发 L0→L1 压缩
   int l0_compaction_trigger = 4;
+  // L0 文件数达到该值时暂停写入，等后台压缩追上（写停顿 write stall，防止 L0 无限堆积拖垮读）
+  size_t l0_stop_writes_trigger = 12;
   // L1 的容量上限；L2、L3 依次 ×10
   uint64_t level1_max_bytes = 10 << 20;
   // 压缩输出的单个 SSTable 目标大小

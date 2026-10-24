@@ -6,6 +6,7 @@
 
 ```bash
 scripts/build_and_test.sh            # 编译到 ./build 并跑全部测试
+scripts/run_tsan.sh                  # ThreadSanitizer 编译并跑全部测试
 ```
 
 ## Phase 1：MemTable ✅
@@ -36,7 +37,7 @@ scripts/build_and_test.sh            # 编译到 ./build 并跑全部测试
 - `DB`：MemTable 超过 `memtable_size` → 冻结为 `imm_` → 写 L0 SSTable → 更新 MANIFEST → 删除旧 WAL。此阶段刷盘在写线程同步完成。
 - 测试：`tests/sstable_test.cpp`（点查/墓碑/缺失键、迭代与 Seek、块损坏检测、非 SSTable 文件）；`tests/db_test.cpp`（写入远超阈值后重启全部读回、新 SSTable 遮住旧值、孤儿 .sst 清理）。
 
-已知问题：刷盘在写线程同步进行，写入会出现延迟毛刺（Phase 6 解决）。
+已知问题：无（Phase 6 起刷盘在后台线程）。
 
 ## Phase 4：读路径与布隆过滤器 ✅
 
@@ -56,4 +57,15 @@ scripts/build_and_test.sh            # 编译到 ./build 并跑全部测试
 - `DB`：每次刷盘后循环压缩直到各层不超标；`CompactAll()` 手动全量压缩。
 - 测试：`tests/compaction_test.cpp`——1000 个键覆盖写 20 轮后 SSTable 总量 < 3×活数据、文件数 < 15；删除全部键后 `CompactAll` 文件数归零；重启后各层有序；对拍测试改用很小的层容量，覆盖 L0~L3 的多层压缩（`KV_FUZZ_OPS=100000` 也通过）。
 
-已知问题：刷盘和压缩仍在写线程同步执行，写延迟有明显毛刺（Phase 6 解决）。
+已知问题：无（同步刷盘/压缩的问题已在 Phase 6 解决）。
+
+## Phase 6：并发 ✅
+
+- 单写者（`write_mu_`）+ 多读者（锁内只拷贝 SuperVersion 指针，锁外读不可变数据）+ 一个后台线程（刷盘优先，其次压缩）。
+- `src/db_background.cpp`：后台循环、刷盘、自动/手动压缩、MANIFEST 与过期文件清理；耗时 I/O 都在放锁后进行。
+- 写停顿：冻结表未刷完、或 L0 ≥ 12 个文件时写者等待。后台错误会让后续写入抛异常。
+- 新接口：`DB::WaitForIdle()`（等后台空闲）。
+- 测试：`tests/concurrency_test.cpp`——1 写 4 读，读者校验"读到的轮次不早于读之前已完成的轮次"和 Scan 有序/完整；4 个线程并发写 + 删除后全量校验。数据量用 `KV_STRESS_KEYS` 调。
+- **ThreadSanitizer**：`scripts/run_tsan.sh`，35 个测试全部通过，0 个数据竞争报告。
+
+已知问题：一次大压缩期间不能刷盘，写入速度很快时会因冻结表未刷完而停顿（单后台线程的代价）。

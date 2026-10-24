@@ -40,6 +40,7 @@ add_library(kv STATIC
   src/compaction.cpp
   src/crc32.cpp
   src/db.cpp
+  src/db_background.cpp
   src/file.cpp
   src/memtable.cpp
   src/merging_iterator.cpp
@@ -59,6 +60,7 @@ if(KV_BUILD_TESTS)
     tests/memtable_test.cpp
     tests/bloom_test.cpp
     tests/compaction_test.cpp
+    tests/concurrency_test.cpp
     tests/db_test.cpp
     tests/db_fuzz_test.cpp
     tests/merging_iterator_test.cpp
@@ -67,5 +69,11 @@ if(KV_BUILD_TESTS)
   )
   target_link_libraries(kv_tests PRIVATE kv GTest::gtest_main)
   include(GoogleTest)
-  gtest_discover_tests(kv_tests DISCOVERY_TIMEOUT 60)
+  if(KV_SANITIZE STREQUAL "thread")
+    # 新内核上 TSan 需要在关闭 ASLR 的进程里运行（setarch -R），
+    # 所以不在编译时跑测试程序做发现，推迟到 ctest 运行时
+    gtest_discover_tests(kv_tests DISCOVERY_TIMEOUT 60 DISCOVERY_MODE PRE_TEST)
+  else()
+    gtest_discover_tests(kv_tests DISCOVERY_TIMEOUT 60)
+  endif()
 endif()

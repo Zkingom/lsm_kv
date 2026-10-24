@@ -58,3 +58,16 @@
 - **输出按 `target_file_size`（默认 2MB）切分成多个文件** —— 下次压缩只需重写重叠的小文件，降低单次压缩的写放大 —— 备选：每次输出一个大文件。
 - **`DB::CompactAll()` 手动全量压缩：先刷内存表，再逐层压到底** —— 测试与工具使用；与 LevelDB `CompactRange(nullptr, nullptr)` 类似 —— 无。
 - **Phase 5 压缩在写线程同步执行** —— 先保证正确，Phase 6 移到后台 —— 无。
+
+## Phase 6：并发
+
+- **单写者：`write_mu_` 串行化所有 Put/Delete，并保护 `wal_`** —— CLAUDE.md 要求；WAL 追加天然串行 —— 备选：LevelDB 的写者队列 + 组提交（多个写者合并成一批写 WAL，吞吐更高）。
+- **状态锁用 `std::mutex mu_`，读者只在锁内拷贝 `mem_/imm_/current_` 三个 shared_ptr（SuperVersion）然后放锁读** —— 锁持有时间几十纳秒，读者之间几乎不竞争；比用 `shared_mutex` 包住整个读路径更好：长读不会挡住写者切换 MemTable —— 备选：整个 Get 持 `std::shared_mutex` 共享锁（实现更直观，但长 Scan 会让写者饿死）。
+- **MemTable 内部用 `std::shared_mutex`：读共享、写独占** —— 写者插入与读者查找可并发安全；不上无锁跳表 —— 备选：LevelDB 无锁跳表（原子指针 + 内存序）。
+- **一个后台线程串行做刷盘和压缩，刷盘优先** —— 只有它修改 `current_`，放锁做 I/O 期间版本不变；也不会误删正在生成的文件，省掉 LevelDB 的 `pending_outputs_` —— 备选：多个压缩线程（RocksDB），需要跟踪正在压缩的文件、避免冲突。
+- **写停顿：内存里已有一张冻结表未刷完，或 L0 文件数 ≥ `l0_stop_writes_trigger`(12) 时写者在条件变量上等** —— 防止内存和 L0 无限增长 —— 备选：LevelDB 在 8 个 L0 文件时每次写 sleep 1ms 做软降速。
+- **WAL 删除以 `MinLiveLogNumber()`（有冻结表时取冻结表的 WAL 编号）为界** —— 修复 Phase 5 同步模型下不存在、并发后才出现的问题：后台压缩时可能把冻结表还未刷盘的 WAL 当作过期删掉 —— 无。
+- **后台出错（如磁盘满）记录到 `bg_error_`，之后所有写入抛 IOError，后台停止工作** —— 不在数据可能不一致时继续写 —— 备选：重试/只读模式。
+- **关闭时不刷内存表，只等后台线程做完手上的活** —— 内存表数据已在 WAL 里，下次打开会重放 —— 备选：关闭前刷盘（下次启动更快）。
+- **`CompactAll` 由后台线程执行，调用方持 `write_mu_` 等待完成** —— 保持"只有后台线程修改版本"的不变量 —— 无。
+- **TSan：新内核 ASLR 位数大，用 `setarch -R` 关闭测试进程的 ASLR；TSan 构建推迟 gtest 用例发现到 ctest 运行时** —— 不改系统设置 —— 备选：`sysctl vm.mmap_rnd_bits=28`（系统级）。

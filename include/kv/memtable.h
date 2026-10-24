@@ -10,10 +10,14 @@
 //     代价：没法实现快照/MVCC。见 docs/DECISIONS.md。
 //   - 怎么判断 MemTable "满了"？
 //     答：统计键值字节数 + 每个节点的固定开销，近似估计内存占用。
+//   - 并发怎么保护？
+//     答：内部一把 std::shared_mutex（读写锁）：Get / 迭代拿共享锁，可以多个读者同时进行；
+//     Put / Delete 拿独占锁。写只有一个线程（DB 层保证），所以独占锁持有时间很短。
 #pragma once
 
 #include <cstddef>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 
 #include "kv/iterator.h"
@@ -32,8 +36,8 @@ class MemTable {
   LookupResult Get(const std::string& key, std::string* value) const;
 
   // 近似内存占用（字节），用于判断是否需要刷盘
-  size_t ApproximateMemoryUsage() const { return memory_usage_; }
-  size_t Count() const { return table_.Size(); }
+  size_t ApproximateMemoryUsage() const;
+  size_t Count() const;
 
   // 返回按键升序的迭代器，墓碑也会出现在其中（type() == kDeletion）。
   std::unique_ptr<Iterator> NewIterator() const;
@@ -49,6 +53,7 @@ class MemTable {
   // 每个跳表节点除了键值本身之外的固定开销估计（节点结构 + vector + 字符串头）
   static constexpr size_t kNodeOverhead = 96;
 
+  mutable std::shared_mutex mu_;  // 保护下面两个成员
   SkipList<std::string, Entry> table_;
   size_t memory_usage_ = 0;
 };

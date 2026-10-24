@@ -85,6 +85,13 @@ uint64_t MaxBytesForLevel(const Options& options, int level) {
   return bytes;
 }
 
+bool NeedsCompaction(const Version& version, const Options& options) {
+  for (int level = 0; level < kNumLevels - 1; ++level) {
+    if (LevelScore(version, options, level) >= 1.0) return true;
+  }
+  return false;
+}
+
 std::optional<Compaction> PickCompaction(const Version& version, const Options& options,
                                          CompactPointers* pointers) {
   int best_level = -1;

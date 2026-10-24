@@ -51,6 +51,9 @@ using CompactPointers = std::array<std::string, kNumLevels>;
 
 uint64_t MaxBytesForLevel(const Options& options, int level);
 
+// 是否有某一层超标（分数 >= 1）
+bool NeedsCompaction(const Version& version, const Options& options);
+
 // 根据分数挑一个需要做的压缩；都不需要时返回 nullopt
 std::optional<Compaction> PickCompaction(const Version& version, const Options& options,
                                          CompactPointers* pointers);

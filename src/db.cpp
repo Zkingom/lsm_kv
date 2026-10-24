@@ -1,8 +1,8 @@
+// db.cpp —— 打开/恢复、写路径、读路径。后台刷盘与压缩见 db_background.cpp
 #include "kv/db.h"
 
 #include <algorithm>
 #include <filesystem>
-#include <set>
 
 #include "kv/filename.h"
 #include "kv/merging_iterator.h"
@@ -15,6 +15,8 @@ std::unique_ptr<DB> DB::Open(const Options& options, const std::string& dir) {
   // 构造函数是私有的，不能用 make_unique
   std::unique_ptr<DB> db(new DB(options, dir));
   db->Recover();
+  // 恢复完成后才启动后台线程，恢复过程不用考虑并发
+  db->bg_thread_ = std::thread(&DB::BackgroundLoop, db.get());
   return db;
 }
 
@@ -24,9 +26,21 @@ DB::DB(const Options& options, const std::string& dir)
       mem_(std::make_shared<MemTable>()),
       current_(std::make_shared<Version>()) {}
 
+DB::~DB() {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    shutting_down_ = true;
+  }
+  bg_cv_.notify_all();
+  // 后台线程如果正在刷盘/压缩，会做完这一件再退出
+  if (bg_thread_.joinable()) bg_thread_.join();
+}
+
 // ======================== 恢复 ========================
 
 void DB::Recover() {
+  // 这时还没有其它线程，但仍按"访问共享状态要持有 mu_"的约定加锁，规则统一
+  std::unique_lock<std::mutex> lock(mu_);
   fs::create_directories(dir_);
   lock_ = std::make_unique<FileLock>(LockFileName(dir_));
 
@@ -36,14 +50,15 @@ void DB::Recover() {
 
   // [持久化] 重放出的数据直接刷成 SSTable，然后换一个全新的 WAL。
   // 这样旧 WAL（可能末尾有残缺记录）可以整个删掉，不需要在残缺处之后继续追加。
-  log_number_ = NewFileNumber();
+  log_number_ = next_file_number_++;
   wal_ = std::make_unique<WalWriter>(LogFileName(dir_, log_number_), options_.sync_wal);
   if (mem_->Count() > 0) {
     imm_ = std::move(mem_);
+    imm_log_number_ = min_log_number;
     mem_ = std::make_shared<MemTable>();
-    FlushImmutable();
+    FlushImmutable(lock);
   } else {
-    SaveManifest(*current_);
+    SaveManifest(*current_, log_number_);
     RemoveObsoleteFiles();
   }
 }
@@ -105,128 +120,71 @@ void DB::Put(const std::string& key, const std::string& value) {
 void DB::Delete(const std::string& key) { Write(ValueType::kDeletion, key, std::string()); }
 
 void DB::Write(ValueType type, const std::string& key, const std::string& value) {
-  MakeRoomForWrite();
+  std::lock_guard<std::mutex> writer(write_mu_);  // 单写者：多个线程同时写会在这里排队
+  std::shared_ptr<MemTable> mem;
+  {
+    std::unique_lock<std::mutex> lock(mu_);
+    MakeRoomForWrite(lock);
+    mem = mem_;
+  }
+  // 下面两步不持有 mu_：写 WAL 的磁盘 I/O 不会挡住读者和后台线程。
+  // mem 不会在这期间被冻结——只有写者自己会切换 MemTable，而写者就是我们。
   // [持久化] 先写日志，再写内存表（原因见 db.h 顶部）
   wal_->AddRecord(type, key, value);
   if (type == ValueType::kValue) {
-    mem_->Put(key, value);
+    mem->Put(key, value);
   } else {
-    mem_->Delete(key);
+    mem->Delete(key);
   }
 }
 
-void DB::MakeRoomForWrite() {
-  if (mem_->ApproximateMemoryUsage() < options_.memtable_size) return;
-  SwitchMemTable();
-  // [性能] Phase 3 在写线程里同步刷盘：这次写入要等整张表写完才返回（延迟毛刺）。
-  // Phase 6 改为交给后台线程。
-  FlushImmutable();
+void DB::MakeRoomForWrite(std::unique_lock<std::mutex>& lock) {
+  while (true) {
+    ThrowIfBackgroundError();
+    if (mem_->ApproximateMemoryUsage() < options_.memtable_size) return;
+    if (imm_ != nullptr) {
+      // 上一张冻结表还没刷完，内存里不能再多一张：等后台（背压）。
+      // [性能] 写入在这里停顿就是 write stall。写入速度长期超过刷盘速度时一定会发生。
+      bg_cv_.wait(lock);
+    } else if (current_->levels[0].size() >= options_.l0_stop_writes_trigger) {
+      bg_cv_.wait(lock);  // L0 堆积太多会拖垮读，等后台压缩追上
+    } else {
+      SwitchMemTable();
+      bg_cv_.notify_all();  // 叫醒后台线程去刷盘
+    }
+  }
 }
 
+// 调用时持有 write_mu_ 和 mu_
 void DB::SwitchMemTable() {
-  imm_ = std::move(mem_);
-  mem_ = std::make_shared<MemTable>();
   // 新 MemTable 配新 WAL。旧 WAL 要等 imm_ 刷盘成功后才能删
-  log_number_ = NewFileNumber();
-  wal_ = std::make_unique<WalWriter>(LogFileName(dir_, log_number_), options_.sync_wal);
+  uint64_t new_log = next_file_number_++;
+  wal_ = std::make_unique<WalWriter>(LogFileName(dir_, new_log), options_.sync_wal);
+  imm_ = std::move(mem_);
+  imm_log_number_ = log_number_;
+  mem_ = std::make_shared<MemTable>();
+  log_number_ = new_log;
 }
 
-// ======================== 刷盘 ========================
-
-void DB::FlushImmutable() {
-  std::shared_ptr<FileMeta> meta = WriteLevel0Table(*imm_);
-  auto version = std::make_shared<Version>(*current_);  // copy-on-write
-  version->levels[0].insert(version->levels[0].begin(), std::move(meta));
-
-  // [持久化] 顺序很重要：先让 MANIFEST 记住新文件（同时推进 log_number），
-  // 再把新版本装上、删除旧 WAL。
-  SaveManifest(*version);
-  current_ = std::move(version);
-  imm_.reset();
-  RemoveObsoleteFiles();
-  // [性能] Phase 5 在刷盘后同步压缩，写线程会被阻塞更久；Phase 6 移到后台线程
-  MaybeCompact();
-}
-
-std::shared_ptr<FileMeta> DB::WriteLevel0Table(const MemTable& mem) {
-  auto meta = std::make_shared<FileMeta>();
-  meta->number = NewFileNumber();
-  const std::string path = TableFileName(dir_, meta->number);
-  {
-    TableBuilder builder(path, options_);
-    auto it = mem.NewIterator();
-    // 墓碑也要写进 SSTable：它要遮住更老文件里的同名键
-    for (it->SeekToFirst(); it->Valid(); it->Next()) builder.Add(it->key(), it->type(), it->value());
-    builder.Finish();  // 内部已 fsync；目录项由随后 WriteManifest 里的 SyncDir 落盘
-  }
-  meta->table = Table::Open(path);
-  return meta;
-}
-
-void DB::SaveManifest(const Version& version) {
-  ManifestData data;
-  data.next_file_number = next_file_number_;
-  data.log_number = log_number_;
-  for (int level = 0; level < kNumLevels; ++level) {
-    for (const auto& file : version.levels[level]) data.files.emplace_back(level, file->number);
-  }
-  WriteManifest(dir_, data);
-}
-
-void DB::RemoveObsoleteFiles() {
-  std::set<uint64_t> live;
-  for (const auto& level : current_->levels) {
-    for (const auto& file : level) live.insert(file->number);
-  }
-  for (const auto& entry : fs::directory_iterator(dir_)) {
-    const std::string name = entry.path().filename().string();
-    uint64_t number = 0;
-    FileType type = ParseFileName(name, &number);
-    bool obsolete = (type == FileType::kLog && number < log_number_) ||
-                    (type == FileType::kTable && live.count(number) == 0);
-    if (obsolete) fs::remove(entry.path());
-  }
-}
-
-// ======================== 压缩 ========================
-
-void DB::MaybeCompact() {
-  while (auto c = PickCompaction(*current_, options_, &compact_pointers_)) DoCompaction(*c);
-}
-
-void DB::CompactAll() {
-  // 先把内存表刷下去，否则留在内存里的墓碑/新值不参与压缩
-  if (mem_->Count() > 0) {
-    SwitchMemTable();
-    FlushImmutable();
-  }
-  for (int level = 0; level < kNumLevels - 1; ++level) {
-    if (auto c = CompactWholeLevel(*current_, level)) DoCompaction(*c);
-  }
-}
-
-void DB::DoCompaction(const Compaction& c) {
-  std::vector<std::shared_ptr<FileMeta>> outputs;
-  if (c.IsTrivialMove()) {
-    outputs = c.inputs;  // [性能] 下一层没有重叠：文件原样挪下去，不用重写
-  } else {
-    outputs = RunCompaction(c, *current_, options_, dir_, [this] { return NewFileNumber(); });
-  }
-  std::shared_ptr<Version> version = ApplyCompaction(*current_, c, outputs);
-  // [持久化] 先让 MANIFEST 指向新文件，再删除旧文件。中途崩溃最多留下孤儿文件
-  SaveManifest(*version);
-  current_ = std::move(version);
-  RemoveObsoleteFiles();
+void DB::ThrowIfBackgroundError() const {
+  if (!bg_error_.empty()) throw IOError("background error: " + bg_error_);
 }
 
 // ======================== 读路径 ========================
 
+DB::SuperVersion DB::GetSuperVersion() const {
+  // 只在锁内拷贝三个指针（几十纳秒），真正的查找在锁外进行
+  std::lock_guard<std::mutex> lock(mu_);
+  return SuperVersion{mem_, imm_, current_};
+}
+
 std::optional<std::string> DB::Get(const std::string& key) const {
+  SuperVersion sv = GetSuperVersion();
   std::string value;
   // 从新到旧查：可写 MemTable → 冻结 MemTable → SSTable
-  LookupResult r = mem_->Get(key, &value);
-  if (r == LookupResult::kNotFound && imm_) r = imm_->Get(key, &value);
-  if (r == LookupResult::kNotFound) r = current_->Get(key, &value);
+  LookupResult r = sv.mem->Get(key, &value);
+  if (r == LookupResult::kNotFound && sv.imm) r = sv.imm->Get(key, &value);
+  if (r == LookupResult::kNotFound) r = sv.version->Get(key, &value);
   if (r == LookupResult::kFound) return value;
   return std::nullopt;
 }
@@ -234,11 +192,12 @@ std::optional<std::string> DB::Get(const std::string& key) const {
 std::vector<std::pair<std::string, std::string>> DB::Scan(const std::string& start,
                                                          const std::string& end,
                                                          size_t limit) const {
+  SuperVersion sv = GetSuperVersion();
   // 子迭代器必须按 新→旧 排列，归并时同一个键只保留最新的
   std::vector<std::unique_ptr<Iterator>> children;
-  children.push_back(mem_->NewIterator());
-  if (imm_) children.push_back(imm_->NewIterator());
-  current_->AddIterators(start, end, &children);
+  children.push_back(sv.mem->NewIterator());
+  if (sv.imm) children.push_back(sv.imm->NewIterator());
+  sv.version->AddIterators(start, end, &children);
 
   MergingIterator it(std::move(children));
   std::vector<std::pair<std::string, std::string>> result;
@@ -251,12 +210,12 @@ std::vector<std::pair<std::string, std::string>> DB::Scan(const std::string& sta
 }
 
 int DB::NumFilesAtLevel(int level) const {
-  return static_cast<int>(current_->levels[level].size());
+  return static_cast<int>(GetSuperVersion().version->levels[level].size());
 }
 
 uint64_t DB::TotalTableBytes() const {
   uint64_t total = 0;
-  for (const auto& files : current_->levels) {
+  for (const auto& files : GetSuperVersion().version->levels) {
     for (const auto& f : files) total += f->file_size();
   }
   return total;

@@ -38,6 +38,7 @@ TEST(CompactionTest, OverwritesShrinkFilesAndBytes) {
       written += Key(i).size() + value.size();
     }
   }
+  db->WaitForIdle();  // 压缩在后台进行，等它做完再看文件布局
   uint64_t live = written / rounds;  // 只有最后一轮的数据是活的
   // 不压缩的话 SSTable 总量约等于 written（~2.2MB）、文件数 ~70 个
   EXPECT_LT(db->TotalTableBytes(), 3 * live);
@@ -73,6 +74,7 @@ TEST(CompactionTest, LevelsStayNonOverlappingAndDataSurvivesReopen) {
   {
     auto db = DB::Open(SmallOptions(), tmp.path());
     for (int i = 0; i < 20000; ++i) db->Put(Key(i * 7919 % 20000), std::to_string(i));
+    db->WaitForIdle();
     EXPECT_LE(db->NumFilesAtLevel(0), SmallOptions().l0_compaction_trigger);
   }
   auto db = DB::Open(SmallOptions(), tmp.path());
