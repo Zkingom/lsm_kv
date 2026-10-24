@@ -5,7 +5,7 @@
 ## Phase 1：MemTable
 
 - **MemTable 中同一个键只保留最新值（覆盖写），不存多版本序列号** —— 本项目不做快照读，多版本只会增加内存和实现复杂度；读路径"新层覆盖旧层"的语义仍然成立 —— 备选：LevelDB 式 `(user_key, seq, type)` 内部键，可支持快照/MVCC。
-- **跳表读写都由锁保护，不实现 LevelDB 的"一写多读无锁"跳表** —— CLAUDE.md 要求不上无锁结构；锁的版本更容易读懂、也更容易用 TSan 验证 —— 备选：用 `std::atomic` 指针 + 内存序实现无锁读。
+- **跳表读写都由锁保护，不实现 LevelDB 的"一写多读无锁"跳表** —— 有意不上无锁结构；锁的版本更容易读懂、也更容易用 TSan 验证 —— 备选：用 `std::atomic` 指针 + 内存序实现无锁读。
 - **跳表节点用 `new` + `std::vector<Node*>` 存后继指针** —— 可读性优先 —— 备选：Arena 批量分配 + 柔性数组（LevelDB），分配次数更少。
 - **跳表层高概率 1/4、最大 12 层、随机种子固定** —— 与 LevelDB 相同；固定种子让问题可复现 —— 备选：p=1/2（更多指针、更少比较）。
 - **MemTable 迭代器是"拷贝快照"** —— 迭代期间无需持锁，Phase 6 并发下最简单安全 —— 备选：直接遍历跳表（需要无锁跳表或长时间持锁）。
@@ -14,7 +14,7 @@
 
 ## 构建与测试
 
-- **GoogleTest 通过 FetchContent 拉取 v1.14.0** —— CLAUDE.md 要求；开发机 WSL 里 CMake 自带下载偶发 SSL 失败，所以本地用 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<已下载源码>` 指向手动下载的同版本源码，CMakeLists 本身不变 —— 备选：`find_package(GTest)` 用系统包（但 TSan 构建时系统包未插桩）、自写断言头文件。
+- **GoogleTest 通过 FetchContent 拉取 v1.14.0** —— 不需要预装依赖、版本可控；开发机 WSL 里 CMake 自带下载偶发 SSL 失败，所以本地用 `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<已下载源码>` 指向手动下载的同版本源码，CMakeLists 本身不变 —— 备选：`find_package(GTest)` 用系统包（但 TSan 构建时系统包未插桩）、自写断言头文件。
 - **构建目录放在仓库外（WSL 的 `~/build/lsm-kv`）** —— 仓库在 Windows 盘上，跨文件系统编译慢；`.gitignore` 也忽略了 `build/` —— 备选：仓库内 `build/`。
 
 ## Phase 2：WAL 与崩溃恢复
@@ -61,7 +61,7 @@
 
 ## Phase 6：并发
 
-- **单写者：`write_mu_` 串行化所有 Put/Delete，并保护 `wal_`** —— CLAUDE.md 要求；WAL 追加天然串行 —— 备选：LevelDB 的写者队列 + 组提交（多个写者合并成一批写 WAL，吞吐更高）。
+- **单写者：`write_mu_` 串行化所有 Put/Delete，并保护 `wal_`** —— 模型最简单、易验证；WAL 追加天然串行 —— 备选：LevelDB 的写者队列 + 组提交（多个写者合并成一批写 WAL，吞吐更高）。
 - **状态锁用 `std::mutex mu_`，读者只在锁内拷贝 `mem_/imm_/current_` 三个 shared_ptr（SuperVersion）然后放锁读** —— 锁持有时间几十纳秒，读者之间几乎不竞争；比用 `shared_mutex` 包住整个读路径更好：长读不会挡住写者切换 MemTable —— 备选：整个 Get 持 `std::shared_mutex` 共享锁（实现更直观，但长 Scan 会让写者饿死）。
 - **MemTable 内部用 `std::shared_mutex`：读共享、写独占** —— 写者插入与读者查找可并发安全；不上无锁跳表 —— 备选：LevelDB 无锁跳表（原子指针 + 内存序）。
 - **一个后台线程串行做刷盘和压缩，刷盘优先** —— 只有它修改 `current_`，放锁做 I/O 期间版本不变；也不会误删正在生成的文件，省掉 LevelDB 的 `pending_outputs_` —— 备选：多个压缩线程（RocksDB），需要跟踪正在压缩的文件、避免冲突。
@@ -74,7 +74,7 @@
 
 ## Phase 7：网络服务层
 
-- **单 Reactor：一个线程跑 epoll 循环，命令在 I/O 线程里同步执行** —— CLAUDE.md 要求；最容易读懂 —— 备选：多 Reactor（one loop per thread）、I/O 线程 + 业务线程池。
+- **单 Reactor：一个线程跑 epoll 循环，命令在 I/O 线程里同步执行** —— 最容易读懂、易调试 —— 备选：多 Reactor（one loop per thread）、I/O 线程 + 业务线程池。
 - **水平触发（LT），但每次都读/写到 EAGAIN** —— LT 漏读也不会丢事件，不容易写错；读到 EAGAIN 减少唤醒次数 —— 备选：边缘触发（ET，必须读到 EAGAIN，否则连接"卡死"）。
 - **只在输出缓冲非空时关注 EPOLLOUT** —— 否则 socket 几乎总是可写，epoll_wait 空转 —— 无。
 - **背压：连接输出缓冲 > 4MB 时暂停读该连接；单行命令 > 1MB 报错并断开** —— 防止慢客户端/恶意客户端把服务端内存撑爆 —— 备选：无限制（简单但危险）。
@@ -86,7 +86,7 @@
 
 ## Phase 8：性能基准
 
-- **基准默认 10 万条，对比矩阵用 50 万条（约 58MB）** —— 符合"主人机器只有约 5GB 内存"的约束，同时能形成 L0~L2 三层 —— 备选：百万级以上（更接近真实，但耗时、占内存）。
+- **基准默认 10 万条，对比矩阵用 50 万条（约 58MB）** —— 在只有约 5GB 可用内存的开发机上也能轻松跑完，同时能形成 L0~L2 三层 —— 备选：百万级以上（更接近真实，但耗时、占内存）。
 - **写测试的耗时不含等待后台压缩，但写放大统计包含压缩** —— 与 LevelDB db_bench 的口径一致（写入延迟是用户看到的；写放大是磁盘看到的） —— 无。
 - **每次操作单独计时得到 p50/p99** —— `steady_clock::now()` 本身约 20ns，对微秒级操作影响可以接受 —— 备选：HdrHistogram 分桶统计（省内存）。
 - **新增 `DB::GetStats()`，每个 Table 用原子计数器记录读块次数** —— 用数据解释布隆过滤器和写放大，而不是只报吞吐 —— 无。
