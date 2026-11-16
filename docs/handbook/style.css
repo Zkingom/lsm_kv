@@ -1,0 +1,50 @@
+/* Print stylesheet for the handbook (A4, rendered by headless Chromium). */
+@page { size: A4; }
+html { font-size: 9.7pt; }
+body {
+  margin: 0;
+  font-family: "Liberation Sans", "WenQuanYi Zen Hei", sans-serif;
+  line-height: 1.42;
+  color: #1a1a1a;
+  text-align: left;
+}
+:lang(zh-CN) body, html[lang="zh-CN"] body { font-family: "WenQuanYi Zen Hei", "Liberation Sans", sans-serif; line-height: 1.5; }
+header#title-block-header { margin: 0 0 4pt; }
+h1.title { font-size: 17pt; margin: 0; padding: 0; border: none; }
+h1 { font-size: 12.5pt; margin: 11pt 0 4pt; padding-bottom: 2pt; border-bottom: 1.2pt solid #44546a; color: #22304a; break-after: avoid; }
+h2 { font-size: 10pt; margin: 7pt 0 2pt; color: #22304a; break-after: avoid; }
+p { margin: 3pt 0; orphans: 2; widows: 2; }
+ul, ol { margin: 2pt 0; padding-left: 14pt; }
+li { margin: 1.2pt 0; }
+li > p { margin: 0; }
+code {
+  font-family: "Liberation Mono", "WenQuanYi Zen Hei Mono", monospace;
+  font-size: 0.9em;
+  background: #f1f3f6;
+  padding: 0 1.5pt;
+  border-radius: 2pt;
+  overflow-wrap: break-word;
+}
+sup { font-size: 0.72em; color: #9a6a00; line-height: 0; }
+table { border-collapse: collapse; width: 100%; margin: 4pt 0 5pt; font-size: 0.94em; table-layout: auto; }
+th, td { border: 0.6pt solid #b8bec8; padding: 2pt 4pt; vertical-align: top; overflow-wrap: break-word; }
+th { background: #e9edf3; text-align: left; }
+tr { break-inside: avoid; }
+td:first-child { white-space: nowrap; }
+td[style*="right"], th[style*="right"] { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lead { background: #f6f7f9; border-left: 2.5pt solid #44546a; padding: 3pt 7pt; margin: 4pt 0 2pt; }
+.lead p { margin: 0; }
+.figs { display: flex; gap: 6mm; justify-content: center; margin: 4pt 0; }
+.figs img { width: 84mm; height: auto; border: 0.5pt solid #d5d9df; }
+.cols { display: flex; gap: 5mm; align-items: flex-start; }
+.cols > div { flex: 1 1 0; min-width: 0; }
+.refs p { margin: 0; font-size: 0.93em; }
+.refs { column-count: 2; column-gap: 6mm; }
+/* WenQuanYi Zen Hei ships no bold face: emulate it with a hairline stroke for CJK pages. */
+html[lang="zh-CN"] strong, html[lang="zh-CN"] h1, html[lang="zh-CN"] h2, html[lang="zh-CN"] th {
+  -webkit-text-stroke: 0.35pt currentColor;
+}
+strong { color: #14213d; }
+sup.m { color: inherit; font-size: 0.75em; }
+.refs ul { list-style: none; padding-left: 0; margin: 0; font-size: 0.93em; }
+.refs { break-inside: avoid; }
